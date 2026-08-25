@@ -1,0 +1,8 @@
+Checked companies: RELIANCE, TCS, INFY, HDFCBANK, ICICIBANK
+
+- Year coverage verified
+- No missing years
+- Financial values consistent
+- No abnormal spikes
+
+Result: Data looks clean and reliable
