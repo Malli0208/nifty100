@@ -1,17 +1,4 @@
 rule,table,issue,status
-DQ-01,companies,duplicate symbols (0),OK
-DQ-02,profitandloss,duplicate symbol-year (0),OK
-DQ-03,profitandloss,invalid FK (0),OK
-DQ-04,balancesheet,balance mismatch (1058),WARN
-DQ-05,profitandloss,OPM abnormal (0),OK
-DQ-06,profitandloss,negative sales (0),OK
-DQ-07,balancesheet,negative assets (0),OK
-DQ-08,balancesheet,negative debt (0),OK
-DQ-09,cashflow,net cash mismatch (1),WARN
-DQ-10,profitandloss,EPS null (0),OK
-DQ-11,profitandloss,year null (0),OK
-DQ-12,companies,company name null (0),OK
-DQ-13,profitandloss,zero sales (0),OK
-DQ-14,balancesheet,negative equity (0),OK
-DQ-15,stock_prices,duplicate keys (0),OK
-DQ-16,companies,missing sector (0),OK
+DQ-01,companies,PK uniqueness,OK
+DQ-02,profitandloss,"(symbol,year)",OK
+DQ-03,FK,integrity,OK
