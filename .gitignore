@@ -1,6 +1,21 @@
-venv/
+# Python
 __pycache__/
 *.pyc
+
+# Database
+*.db
+*.sqlite
+
+# Output files
+output/*.csv
+output/*.log
+
+# Excel temp files
+~$*.xlsx
+
+# System files
+.DS_Store
+
 .env
-nifty100.db
+
 data/
