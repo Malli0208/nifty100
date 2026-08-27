@@ -17,7 +17,6 @@ def normalize_year(value):
         return None
 
     value = str(value)
-
     match = re.search(r"(19|20)\d{2}", value)
     return int(match.group()) if match else None
 
@@ -28,7 +27,6 @@ def normalize_ticker(ticker):
 
     ticker = str(ticker).upper().strip()
 
-    # 🔥 CLEAN COMMON ISSUES
     ticker = ticker.replace(".NS", "")
     ticker = ticker.replace(".BO", "")
     ticker = ticker.replace(" LTD", "")
@@ -42,12 +40,12 @@ def normalize_ticker(ticker):
 # -------------------------------
 def load_excel(file_path):
     df = pd.read_excel(file_path, header=None, skiprows=2)
-    print(f" Loaded: {file_path} | Shape: {df.shape}")
+    print(f"Loaded: {file_path} | Shape: {df.shape}")
     return df
 
 
 # -------------------------------
-# AUDIT + VALIDATION
+# AUDIT
 # -------------------------------
 def write_audit(conn, rejected_counts):
     tables = [
@@ -67,22 +65,24 @@ def write_audit(conn, rejected_counts):
     df = pd.DataFrame(audit, columns=["table_name", "rows_loaded", "rejected"])
     df.to_csv(f"{OUTPUT_DIR}/load_audit.csv", index=False)
 
-    print(" load_audit.csv created")
+    print("load_audit.csv created")
 
 
+# -------------------------------
+# VALIDATION
+# -------------------------------
 def write_validation(conn):
     checks = []
 
-    # DQ-01 PK uniqueness
     dup = conn.execute("""
         SELECT COUNT(*) FROM (
             SELECT symbol, COUNT(*) c
             FROM companies GROUP BY symbol HAVING c > 1
         )
     """).fetchone()[0]
+
     checks.append(["DQ-01", "companies", "PK uniqueness", "OK" if dup == 0 else "FAIL"])
 
-    # DQ-02 symbol-year uniqueness
     dup = conn.execute("""
         SELECT COUNT(*) FROM (
             SELECT symbol, year, COUNT(*) c
@@ -90,83 +90,56 @@ def write_validation(conn):
             GROUP BY symbol, year HAVING c > 1
         )
     """).fetchone()[0]
+
     checks.append(["DQ-02", "profitandloss", "(symbol,year)", "OK" if dup == 0 else "FAIL"])
 
-    # DQ-03 FK integrity
     fk = conn.execute("""
         SELECT COUNT(*) FROM profitandloss
         WHERE symbol NOT IN (SELECT symbol FROM companies)
     """).fetchone()[0]
+
     checks.append(["DQ-03", "FK", "integrity", "OK" if fk == 0 else "FAIL"])
 
     df = pd.DataFrame(checks, columns=["rule", "table", "issue", "status"])
     df.to_csv(f"{OUTPUT_DIR}/validation_failures.csv", index=False)
 
-    print(" validation_failures.csv created")
+    print("validation_failures.csv created")
 
 
 # -------------------------------
-# TABLE LOADERS
+# LOADERS
 # -------------------------------
 def load_companies(conn, rejected):
     df = load_excel("data/main/companies.xlsx")
 
-    #  Step 1: Select correct columns
-    df = df.iloc[:, [0, 2]]   # symbol, company_name
+    df = df.iloc[:, [0, 2]]
     df.columns = ["symbol", "company_name"]
 
-    #  Step 2: Clean symbol
-    df["symbol"] = df["symbol"].astype(str).str.strip().str.upper()
     df["symbol"] = df["symbol"].apply(normalize_ticker)
 
-    #  Step 3: Load sector file
+    # sector mapping
     sector_df = pd.read_excel("data/supporting/sectors.xlsx")
-    print(sector_df.head())
-    sector_df = sector_df.iloc[:, [1, 2]]  # symbol, sector
+    sector_df = sector_df.iloc[:, [1, 2]]
     sector_df.columns = ["symbol", "sector"]
-
-    sector_df["symbol"] = sector_df["symbol"].astype(str).str.strip().str.upper()
-    sector_df["symbol"] = (
-    sector_df["symbol"]
-    .astype(str)
-    .str.strip()
-    .str.upper()
-    )
-
     sector_df["symbol"] = sector_df["symbol"].apply(normalize_ticker)
 
-    print("Company symbols:", df["symbol"].head(10).tolist())
-    print("Sector symbols:", sector_df["symbol"].head(10).tolist())
-
-    # create mapping dict
     sector_map = dict(zip(sector_df["symbol"], sector_df["sector"]))
-
-    # map instead of merge
     df["sector"] = df["symbol"].map(sector_map)
 
-    #  REMOVE THIS (you were killing sector data)
-    # df["sector"] = None
-
-    #  Step 5: Remove duplicates
-    df = df.drop_duplicates(subset=["symbol"])
-
-    #  Step 6: Remove null symbols
     before = len(df)
+    df = df.drop_duplicates(subset=["symbol"])
     df = df[df["symbol"].notna()]
+
     rejected["companies"] = before - len(df)
 
-    #  Step 7: Save
     df.to_sql("companies", conn, if_exists="replace", index=False)
-
     print("companies:", len(df))
 
 
 def load_profitandloss(conn, rejected):
     df = load_excel("data/main/profitandloss.xlsx")
-    
 
     df = df.iloc[:, 1:8]
-
     df.columns = [
         "symbol", "raw_year", "sales", "expenses",
         "operating_profit", "net_profit", "eps"
@@ -177,33 +150,24 @@ def load_profitandloss(conn, rejected):
 
     df = df.drop_duplicates(subset=["symbol", "year"])
 
-    valid_symbols = conn.execute("SELECT symbol FROM companies").fetchall()
-    valid_symbols = set([x[0] for x in valid_symbols])
-
-    before_fk = len(df)
-    invalid = df[~df["symbol"].isin(valid_symbols)]
-    rejected["profitandloss"] = len(invalid)
-    df = df[df["symbol"].isin(valid_symbols)]
-    df = df[df["sales"] > 0]
+    valid_symbols = set(pd.read_sql("SELECT symbol FROM companies", conn)["symbol"])
 
     before = len(df)
+
+    df = df[df["symbol"].isin(valid_symbols)]
     df = df[df["year"].notna()]
+    df = df[df["sales"] > 0]
+
     rejected["profitandloss"] = before - len(df)
 
-    df = df[[
-        "symbol", "year", "sales", "expenses",
-        "operating_profit", "net_profit", "eps"
-    ]]
-
     df.to_sql("profitandloss", conn, if_exists="replace", index=False)
-    print(" profitandloss:", len(df))
+    print("profitandloss:", len(df))
 
 
 def load_balancesheet(conn, rejected):
     df = load_excel("data/main/balancesheet.xlsx")
 
     df = df.iloc[:, 1:8]
-
     df.columns = [
         "symbol", "raw_year", "assets", "liabilities",
         "equity", "reserves", "debt"
@@ -214,38 +178,23 @@ def load_balancesheet(conn, rejected):
 
     df = df.drop_duplicates(subset=["symbol", "year"])
 
-
-
-    print("P&L sample:", df["symbol"].unique()[:10])
-
-    valid_symbols = conn.execute("SELECT symbol FROM companies").fetchall()
-    valid_symbols = set([x[0] for x in valid_symbols])
-
-    print("Company sample:", list(valid_symbols)[:10])
-
-    before_fk = len(df)
-    invalid = df[~df["symbol"].isin(valid_symbols)]
-    rejected["balancesheet"] = len(invalid)
-    df = df[df["symbol"].isin(valid_symbols)]
+    valid_symbols = set(pd.read_sql("SELECT symbol FROM companies", conn)["symbol"])
 
     before = len(df)
+
+    df = df[df["symbol"].isin(valid_symbols)]
     df = df[df["year"].notna()]
+
     rejected["balancesheet"] = before - len(df)
 
-    df = df[[
-        "symbol", "year", "assets", "liabilities",
-        "equity", "reserves", "debt"
-    ]]
-
     df.to_sql("balancesheet", conn, if_exists="replace", index=False)
-    print(" balancesheet:", len(df))
+    print("balancesheet:", len(df))
 
 
 def load_cashflow(conn, rejected):
     df = load_excel("data/main/cashflow.xlsx")
 
     df = df.iloc[:, 1:7]
-
     df.columns = [
         "symbol", "raw_year", "operating_cf",
         "investing_cf", "financing_cf", "net_cash"
@@ -256,30 +205,19 @@ def load_cashflow(conn, rejected):
 
     df = df.drop_duplicates(subset=["symbol", "year"])
 
-    valid_symbols = conn.execute("SELECT symbol FROM companies").fetchall()
-    valid_symbols = set([x[0] for x in valid_symbols])
-
-    before_fk = len(df)
-    invalid = df[~df["symbol"].isin(valid_symbols)]
-    rejected["cashflow"] = len(invalid)
-    df = df[df["symbol"].isin(valid_symbols)]
+    valid_symbols = set(pd.read_sql("SELECT symbol FROM companies", conn)["symbol"])
 
     before = len(df)
+
+    df = df[df["symbol"].isin(valid_symbols)]
     df = df[df["year"].notna()]
+
     rejected["cashflow"] = before - len(df)
 
-    df = df[[
-        "symbol", "year", "operating_cf",
-        "investing_cf", "financing_cf", "net_cash"
-    ]]
-
     df.to_sql("cashflow", conn, if_exists="replace", index=False)
-    print(" cashflow:", len(df))
+    print("cashflow:", len(df))
 
 
-# -------------------------------
-# GENERIC LOADER
-# -------------------------------
 def load_simple(conn, file_path, table_name, rejected):
     df = load_excel(file_path)
     df.columns = [f"col{i}" for i in range(df.shape[1])]
@@ -287,7 +225,7 @@ def load_simple(conn, file_path, table_name, rejected):
     rejected[table_name] = 0
 
     df.to_sql(table_name, conn, if_exists="replace", index=False)
-    print(f" {table_name}:", len(df))
+    print(f"{table_name}:", len(df))
 
 
 # -------------------------------
@@ -302,7 +240,7 @@ def main():
     with open("db/schema.sql", "r") as f:
         conn.executescript(f.read())
 
-    print("\n Loading Data...\n")
+    print("\nLoading Data...\n")
 
     load_companies(conn, rejected)
     load_profitandloss(conn, rejected)
@@ -313,7 +251,6 @@ def main():
     load_simple(conn, "data/main/documents.xlsx", "documents", rejected)
     load_simple(conn, "data/main/prosandcons.xlsx", "prosandcons", rejected)
 
-    load_simple(conn, "data/supporting/financial_ratios.xlsx", "financial_ratios", rejected)
     load_simple(conn, "data/supporting/stock_prices.xlsx", "stock_prices", rejected)
     load_simple(conn, "data/supporting/sectors.xlsx", "sectors", rejected)
     load_simple(conn, "data/supporting/peer_groups.xlsx", "peer_groups", rejected)
@@ -322,9 +259,11 @@ def main():
     write_audit(conn, rejected)
     write_validation(conn)
 
-    conn.close()
+    from src.analytics.engine import run_ratio_engine
+    run_ratio_engine(conn)
 
-    print("\n🔥 ALL DATA LOADED SUCCESSFULLY")
+    print("\nALL DATA LOADED SUCCESSFULLY")
+    conn.close()
 
 
 if __name__ == "__main__":
